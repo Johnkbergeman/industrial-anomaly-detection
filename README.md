@@ -22,3 +22,8 @@ python -m src.run_pipeline
 ```bash
 python -m src.simulate_data --out data/simulated_process_data.csv
 ```
+
+## Validate data
+```bash
+python -m src.validate_data --data data/simulated_process_data.csv --out-dir artifacts
+```
