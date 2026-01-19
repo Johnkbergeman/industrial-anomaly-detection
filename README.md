@@ -14,6 +14,11 @@ causes from tag relationships.
 
 ## How to run
 ```bash
-make install
-make run
+python -m pip install -r requirements.txt
+python -m src.run_pipeline
+```
+
+## Generate data
+```bash
+python -m src.simulate_data --out data/simulated_process_data.csv
 ```
