@@ -1,5 +1,6 @@
 # industrial-anomaly-detection
 
+Note AI was used to aid in coding process.
 Industrial anomaly detection demo built around process time-series (think PI tags on a reactor loop).
 The goal is to show how a simple, interpretable baseline and a multivariate ML model can work side
 by side in a way a process engineer would actually trust.
