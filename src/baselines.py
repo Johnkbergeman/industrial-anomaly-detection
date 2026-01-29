@@ -1,6 +1,7 @@
 """Baseline anomaly detection utilities."""
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
@@ -11,11 +12,16 @@ def rolling_zscore_detector(
     window: int = 60,
     z_thresh: float = 3.0,
 ) -> pd.Series:
+    z = rolling_zscore(df, column, window=window)
+    return (z.abs() > z_thresh).fillna(False)
+
+
+def rolling_zscore(df: pd.DataFrame, column: str, window: int = 60) -> pd.Series:
     roll = df[column].rolling(window=window, min_periods=window)
     mean = roll.mean()
     std = roll.std().replace(0, np.nan)
-    z = (df[column] - mean) / std
-    return (z.abs() > z_thresh).fillna(False)
+    return (df[column] - mean) / std
+
 
 def combine_flags(flag_series_list: list[pd.Series]) -> pd.Series:
     if not flag_series_list:

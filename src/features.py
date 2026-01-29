@@ -15,7 +15,7 @@ SENSOR_COLUMNS = [
 ]
 
 
-def build_features(df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
+def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     features: dict[str, pd.Series] = {}
 
     for col in SENSOR_COLUMNS:
@@ -31,6 +31,9 @@ def build_features(df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
         # First difference highlights abrupt changes.
         features[f"{col}_diff"] = series.diff()
 
-    feature_frame = pd.DataFrame(features)
-    feature_frame = feature_frame.dropna()
+    return pd.DataFrame(features).dropna()
+
+
+def build_features(df: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
+    feature_frame = build_feature_frame(df)
     return feature_frame.to_numpy(), list(feature_frame.columns)
