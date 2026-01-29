@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 
 from .baselines import combine_flags, rolling_zscore_detector
+from .features import build_features
+from .models import predict_isolation_forest, train_isolation_forest
 
 
 REQUIRED_COLUMNS = [
@@ -52,6 +54,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--data", default="data/simulated_process_data.csv", help="Path to CSV data.")
     parser.add_argument("--window", type=int, default=60, help="Rolling window size.")
     parser.add_argument("--z-thresh", type=float, default=3.0, help="Z-score threshold.")
+    parser.add_argument("--contamination", type=float, default=0.02, help="Isolation Forest contamination.")
     return parser.parse_args()
 
 
@@ -67,12 +70,28 @@ def main() -> None:
 
     baseline_anomaly_flag = combine_flags([t_flags, p_flags, f_flags]).astype(int)
     y_true = df["anomaly_flag"].astype(int).to_numpy()
-    y_pred = baseline_anomaly_flag.to_numpy()
+    baseline_pred = baseline_anomaly_flag.to_numpy()
 
-    precision, recall, f1 = _precision_recall_f1(y_true, y_pred)
-    print(f"Baseline precision: {precision:.3f}")
-    print(f"Baseline recall:    {recall:.3f}")
-    print(f"Baseline F1 score:  {f1:.3f}")
+    baseline_precision, baseline_recall, baseline_f1 = _precision_recall_f1(y_true, baseline_pred)
+
+    # Build multivariate features and align the ground truth.
+    X, _feature_names = build_features(df)
+    aligned_true = df.loc[df.index[-len(X):], "anomaly_flag"].astype(int).to_numpy()
+
+    model = train_isolation_forest(X, contamination=args.contamination)
+    iso_pred, _iso_score = predict_isolation_forest(model, X)
+
+    iso_precision, iso_recall, iso_f1 = _precision_recall_f1(aligned_true, iso_pred)
+
+    print("Baseline:")
+    print(f"Precision: {baseline_precision:.3f}")
+    print(f"Recall:    {baseline_recall:.3f}")
+    print(f"F1:        {baseline_f1:.3f}")
+    print("")
+    print("Isolation Forest:")
+    print(f"Precision: {iso_precision:.3f}")
+    print(f"Recall:    {iso_recall:.3f}")
+    print(f"F1:        {iso_f1:.3f}")
 
 
 if __name__ == "__main__":
