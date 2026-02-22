@@ -1,77 +1,75 @@
 # industrial-anomaly-detection
 
-Note AI was used to aid in coding process.
-Industrial anomaly detection demo built around process time-series (think PI tags on a reactor loop).
-The goal is to show how a simple, interpretable baseline and a multivariate ML model can work side
-by side in a way a process engineer would actually trust.
+Industrial anomaly detection prototype for process time-series (reactor-style tags).  
+It runs two detectors in parallel:
+- A transparent rolling z-score baseline
+- A multivariate Isolation Forest model
 
-## Problem statement (industrial framing)
-Operators and control engineers live with noisy signals, sensor drift, actuator sticking, and
-occasional step changes. Catching these early reduces off-spec product, energy waste, and trips.
-This repo simulates those behaviors and evaluates detection using both pointwise and event-level
-metrics (window recall, time-to-detect, false alert duration).
+The pipeline reports both pointwise and event-level metrics, plus simple tag-level attribution.
 
-## Why baseline + ML together
-- Rolling z-score is easy to explain and quick to audit.
-- Isolation Forest captures multivariate relationships (cross-tag effects).
-- Running both gives a check-and-balance: baseline for transparency, ML for coverage.
+## Current status
+- Core pipeline is implemented in `src/run_pipeline.py`.
+- Data simulation is available as a CLI in `src/simulate_data.py`.
+- Plotting and metrics are wired end-to-end.
+- Tests are not implemented yet (`tests/` is empty).
 
-## What is simulated vs. real
-Everything here is simulated. The signals are shaped to resemble a typical process unit
-(daily cycles, operator shifts, actuator noise), and the anomalies are injected with labels.
-In a real plant, labels are scarce and messy, so this code focuses on structure and evaluation
-logic that would still be used in production.
-
-## How this fits a historian or digital twin
-In practice, the input would be a historian query or a digital twin feed:
-- Historian: pull a time range of tags, run batch scoring, save events back to a dashboard.
-- Digital twin: score incrementally on a rolling window, alert when scores cross thresholds.
-The pipeline is structured for both batch and incremental modes without adding streaming tech.
-
-## Tradeoffs (false positives vs missed events)
-There is no perfect threshold. "Conservative" reduces false alerts but may miss early drift.
-"Sensitive" catches earlier but can be noisy. The `--mode` flag makes that trade explicit.
+## Workflow
+1. Create a local environment and install dependencies.
+2. Generate synthetic labeled process data.
+3. Run the pipeline in batch mode to get baseline + Isolation Forest metrics and plots.
+4. Tune thresholds (`--mode`, `--z-thresh`, `--contamination`) based on false alerts vs missed events.
+5. Optionally run incremental mode to mimic streaming behavior.
 
 ## Quick start
 ```bash
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+Generate data:
+```bash
 python -m src.simulate_data --out data/simulated_process_data.csv
+```
+
+Run the full pipeline:
+```bash
 python -m src.run_pipeline --data data/simulated_process_data.csv
 ```
 
-## Modes and thresholds
+## Run modes and tuning
 ```bash
-# Conservative mode: fewer false alerts
-python -m src.run_pipeline --mode conservative
+# Conservative: fewer false alerts
+python -m src.run_pipeline --data data/simulated_process_data.csv --mode conservative
 
-# Sensitive mode: earlier detection
-python -m src.run_pipeline --mode sensitive
+# Sensitive: earlier detection, noisier alerts
+python -m src.run_pipeline --data data/simulated_process_data.csv --mode sensitive
 
 # Custom thresholds
-python -m src.run_pipeline --mode custom --z-thresh 3.2 --contamination 0.02
-```
+python -m src.run_pipeline --data data/simulated_process_data.csv --mode custom --z-thresh 3.2 --contamination 0.02
 
-## Batch vs incremental scoring
-```bash
-# Batch (default)
-python -m src.run_pipeline --run-mode batch
-
-# Streaming-style scoring on a rolling window
-python -m src.run_pipeline --run-mode incremental --stream-warmup 480
+# Incremental scoring (streaming-style simulation)
+python -m src.run_pipeline --data data/simulated_process_data.csv --run-mode incremental --stream-warmup 480
 ```
 
 ## Outputs
-- Pointwise metrics (precision, recall, F1)
-- Event metrics (event recall, time-to-detect, false alert duration)
-- Root-cause hints per detected event
+- Console summaries: precision, recall, F1, event recall, time-to-detect, false alert minutes
+- Event-level root-cause hints (top contributing tags)
 - Plots saved to `artifacts/`
 
+## What to do next
+1. Add smoke tests for dataset generation shape/required columns, pipeline run in `batch` mode, and metrics invariants (no divide-by-zero regressions).
+2. Add one fixed validation dataset in `data/` for deterministic regression checks.
+3. Gate merges on tests in CI.
+
 ## File map
-- `src/simulate_data.py` - generates labeled process data
-- `src/baselines.py` - rolling z-score detector
-- `src/features.py` - feature engineering for ML model
-- `src/models.py` - Isolation Forest wrappers
-- `src/metrics.py` - pointwise + event-level evaluation
-- `src/visualize.py` - plots with anomaly windows + scores
-- `src/run_pipeline.py` - orchestration and CLI
+- `src/simulate_data.py`: synthetic process + anomaly generation
+- `src/baselines.py`: rolling z-score baseline logic
+- `src/features.py`: feature engineering for Isolation Forest
+- `src/models.py`: model train/predict wrappers
+- `src/metrics.py`: pointwise and event metrics
+- `src/attribution.py`: tag ranking for suspected root cause
+- `src/visualize.py`: anomaly overlay plots
+- `src/run_pipeline.py`: orchestration + CLI
 

@@ -160,3 +160,29 @@ def generate_dataset(output_csv, n_hours=14 * 24, freq_min=1, seed=42):
 
     df.to_csv(output_csv, index=False)
     return df
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate simulated industrial process data.")
+    parser.add_argument("--out", default="data/simulated_process_data.csv", help="Output CSV path.")
+    parser.add_argument("--n-hours", type=int, default=14 * 24, help="Total simulated hours.")
+    parser.add_argument("--freq-min", type=int, default=1, help="Sampling frequency in minutes.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    df = generate_dataset(
+        output_csv=args.out,
+        n_hours=args.n_hours,
+        freq_min=args.freq_min,
+        seed=args.seed,
+    )
+    anomaly_points = int(df["anomaly_flag"].sum())
+    print(f"Generated {len(df)} rows to {args.out}")
+    print(f"Anomaly points: {anomaly_points}")
+
+
+if __name__ == "__main__":
+    main()
