@@ -51,12 +51,18 @@ python -m src.run_pipeline --data data/simulated_process_data.csv --mode custom 
 
 # Incremental scoring (streaming-style simulation)
 python -m src.run_pipeline --data data/simulated_process_data.csv --run-mode incremental --stream-warmup 480
+
+# Compare multiple feature models in one run
+python -m src.run_pipeline --data data/simulated_process_data.csv --feature-models isolation_forest,oneclass_svm,local_outlier_factor
 ```
 
 ## Outputs
 - Console summaries: precision, recall, F1, event recall, time-to-detect, false alert minutes
 - Event-level root-cause hints (top contributing tags)
 - Plots saved to `artifacts/`
+- Model comparison tables:
+  - `artifacts/model_comparison_batch.csv`
+  - `artifacts/model_comparison_streaming.csv`
 
 ## What to do next
 1. Add smoke tests for dataset generation shape/required columns, pipeline run in `batch` mode, and metrics invariants (no divide-by-zero regressions).

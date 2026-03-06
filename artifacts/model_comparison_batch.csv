@@ -1,0 +1,5 @@
+model,precision,recall,f1,event_recall,mean_ttd_min,median_ttd_min,false_alert_minutes,detected_events,total_events
+local_outlier_factor,0.11290322580645161,0.04844290657439446,0.06779661016949153,1.0,9.25,5.5,330.0,4,4
+baseline_rolling_zscore,0.0851063829787234,0.02306805074971165,0.036297640653357534,1.0,7.5,0.0,215.0,4,4
+isolation_forest,0.8681592039800995,0.40253748558246827,0.5500394011032309,0.5,45.0,45.0,53.0,2,4
+oneclass_svm,0.0,0.0,0.0,0.0,0.0,0.0,401.0,0,4

@@ -15,7 +15,7 @@ from .attribution import (
 from .baselines import combine_flags, rolling_zscore, rolling_zscore_detector
 from .features import SENSOR_COLUMNS, build_feature_frame
 from .metrics import event_metrics, find_windows, pointwise_metrics
-from .models import predict_isolation_forest, train_isolation_forest
+from .models import SUPPORTED_MODELS, predict_detector, train_detector
 from .visualize import plot_overview
 
 
@@ -51,12 +51,40 @@ MODE_PRESETS = {
 }
 
 
+def _parse_feature_models(raw_value: str) -> list[str]:
+    model_names = [item.strip().lower() for item in raw_value.split(",") if item.strip()]
+    if not model_names:
+        raise argparse.ArgumentTypeError("At least one feature model must be provided.")
+
+    unknown = [name for name in model_names if name not in SUPPORTED_MODELS]
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"Unsupported feature model(s): {unknown}. Supported: {SUPPORTED_MODELS}"
+        )
+    return model_names
+
+
+def _model_label(model_name: str) -> str:
+    labels = {
+        "isolation_forest": "Isolation Forest",
+        "oneclass_svm": "One-Class SVM",
+        "local_outlier_factor": "Local Outlier Factor",
+    }
+    return labels.get(model_name, model_name)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run baseline anomaly detection pipeline.")
     parser.add_argument("--data", default="data/simulated_process_data.csv", help="Path to CSV data.")
     parser.add_argument("--window", type=int, default=60, help="Rolling window size.")
     parser.add_argument("--z-thresh", type=float, default=3.0, help="Z-score threshold.")
-    parser.add_argument("--contamination", type=float, default=0.02, help="Isolation Forest contamination.")
+    parser.add_argument("--contamination", type=float, default=0.02, help="Outlier ratio for feature models.")
+    parser.add_argument(
+        "--feature-models",
+        type=_parse_feature_models,
+        default=["isolation_forest"],
+        help="Comma-separated feature models. Supported: isolation_forest,oneclass_svm,local_outlier_factor",
+    )
     parser.add_argument("--mode", choices=["custom", "conservative", "sensitive"], default="custom")
     parser.add_argument("--run-mode", choices=["batch", "incremental"], default="batch")
     parser.add_argument("--artifacts-dir", default="artifacts", help="Directory for saved plots.")
@@ -82,18 +110,17 @@ def _baseline_detection(df: pd.DataFrame, window: int, z_thresh: float) -> tuple
     return combined, zscores
 
 
-def _isolation_forest_detection(
-    df: pd.DataFrame,
+def _feature_model_detection(
+    feature_frame: pd.DataFrame,
+    model_name: str,
     contamination: float,
-) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
-    feature_frame = build_feature_frame(df)
+) -> tuple[pd.Series, pd.Series]:
     X = feature_frame.to_numpy()
-    model = train_isolation_forest(X, contamination=contamination)
-    iso_pred, iso_score = predict_isolation_forest(model, X)
-
-    pred_series = pd.Series(iso_pred, index=feature_frame.index, name="iso_pred")
-    score_series = pd.Series(iso_score, index=feature_frame.index, name="iso_score")
-    return pred_series, score_series, feature_frame
+    model = train_detector(model_name, X, contamination=contamination)
+    pred, score = predict_detector(model_name, model, X)
+    pred_series = pd.Series(pred, index=feature_frame.index, name=f"{model_name}_pred")
+    score_series = pd.Series(score, index=feature_frame.index, name=f"{model_name}_score")
+    return pred_series, score_series
 
 
 def _print_event_summary(label: str, metrics) -> None:
@@ -119,6 +146,14 @@ def _print_root_causes(label: str, windows: list[tuple[int, int]], rankings: lis
         print(f"  event {idx} [{window[0]}:{window[1]}]: {tags}")
 
 
+def _save_comparison_table(rows: list[dict[str, float | str]], output_path: str) -> None:
+    table = pd.DataFrame(rows)
+    table = table.sort_values(by=["event_recall", "f1", "precision"], ascending=False).reset_index(drop=True)
+    table.to_csv(output_path, index=False)
+    print("")
+    print(f"Saved model comparison table: {output_path}")
+
+
 def _run_batch(df: pd.DataFrame, args: argparse.Namespace) -> None:
     baseline_flag, baseline_zscores = _baseline_detection(df, args.window, args.z_thresh)
     y_true = df["anomaly_flag"].astype(int)
@@ -127,22 +162,42 @@ def _run_batch(df: pd.DataFrame, args: argparse.Namespace) -> None:
     )
     baseline_events = event_metrics(y_true.to_numpy(), baseline_flag.to_numpy(), df["timestamp"])
 
-    iso_pred, iso_score, feature_frame = _isolation_forest_detection(df, args.contamination)
+    feature_frame = build_feature_frame(df)
     aligned_true = df.loc[feature_frame.index, "anomaly_flag"].astype(int)
-    iso_precision, iso_recall, iso_f1 = pointwise_metrics(
-        aligned_true.to_numpy(), iso_pred.to_numpy()
-    )
-    iso_events = event_metrics(aligned_true.to_numpy(), iso_pred.to_numpy(), df.loc[feature_frame.index, "timestamp"])
+    aligned_df = df.loc[feature_frame.index]
+    feature_means = feature_frame.mean()
+    feature_stds = feature_frame.std()
+
+    model_results = []
+    for model_name in args.feature_models:
+        pred, score = _feature_model_detection(feature_frame, model_name, args.contamination)
+        precision, recall, f1 = pointwise_metrics(aligned_true.to_numpy(), pred.to_numpy())
+        events = event_metrics(aligned_true.to_numpy(), pred.to_numpy(), aligned_df["timestamp"])
+        model_results.append(
+            {
+                "name": model_name,
+                "pred": pred,
+                "score": score,
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "events": events,
+            }
+        )
 
     print("Pointwise metrics")
     _print_pointwise_summary("Baseline", baseline_precision, baseline_recall, baseline_f1)
-    print("")
-    _print_pointwise_summary("Isolation Forest", iso_precision, iso_recall, iso_f1)
+    for result in model_results:
+        print("")
+        _print_pointwise_summary(
+            _model_label(result["name"]), result["precision"], result["recall"], result["f1"]
+        )
     print("")
     print("Event metrics")
     _print_event_summary("Baseline", baseline_events)
-    print("")
-    _print_event_summary("Isolation Forest", iso_events)
+    for result in model_results:
+        print("")
+        _print_event_summary(_model_label(result["name"]), result["events"])
 
     baseline_windows = find_windows(baseline_flag.to_numpy())
     baseline_rankings = [
@@ -150,14 +205,13 @@ def _run_batch(df: pd.DataFrame, args: argparse.Namespace) -> None:
     ]
     _print_root_causes("Baseline", baseline_windows, baseline_rankings)
 
-    feature_means = feature_frame.mean()
-    feature_stds = feature_frame.std()
-    iso_windows = find_windows(iso_pred.to_numpy())
-    iso_rankings = [
-        rank_tags_from_features(feature_frame, feature_means, feature_stds, start, end)
-        for start, end in iso_windows
-    ]
-    _print_root_causes("Isolation Forest", iso_windows, iso_rankings)
+    for result in model_results:
+        windows = find_windows(result["pred"].to_numpy())
+        rankings = [
+            rank_tags_from_features(feature_frame, feature_means, feature_stds, start, end)
+            for start, end in windows
+        ]
+        _print_root_causes(_model_label(result["name"]), windows, rankings)
 
     baseline_score = pd.DataFrame(baseline_zscores).abs().max(axis=1).fillna(0.0)
     plot_overview(
@@ -170,16 +224,49 @@ def _run_batch(df: pd.DataFrame, args: argparse.Namespace) -> None:
         output_path=f"{args.artifacts_dir}/baseline_overview.png",
     )
 
-    aligned_df = df.loc[feature_frame.index]
-    plot_overview(
-        df=aligned_df,
-        timestamps=aligned_df["timestamp"],
-        y_true=aligned_true,
-        y_pred=iso_pred,
-        score=iso_score,
-        title="Isolation Forest",
-        output_path=f"{args.artifacts_dir}/isolation_forest_overview.png",
-    )
+    for result in model_results:
+        model_name = result["name"]
+        plot_overview(
+            df=aligned_df,
+            timestamps=aligned_df["timestamp"],
+            y_true=aligned_true,
+            y_pred=result["pred"],
+            score=result["score"],
+            title=_model_label(model_name),
+            output_path=f"{args.artifacts_dir}/{model_name}_overview.png",
+        )
+
+    comparison_rows = [
+        {
+            "model": "baseline_rolling_zscore",
+            "precision": baseline_precision,
+            "recall": baseline_recall,
+            "f1": baseline_f1,
+            "event_recall": baseline_events.event_recall,
+            "mean_ttd_min": baseline_events.mean_time_to_detect_min,
+            "median_ttd_min": baseline_events.median_time_to_detect_min,
+            "false_alert_minutes": baseline_events.false_alert_minutes,
+            "detected_events": baseline_events.detected_events,
+            "total_events": baseline_events.total_events,
+        }
+    ]
+    for result in model_results:
+        events = result["events"]
+        comparison_rows.append(
+            {
+                "model": str(result["name"]),
+                "precision": float(result["precision"]),
+                "recall": float(result["recall"]),
+                "f1": float(result["f1"]),
+                "event_recall": events.event_recall,
+                "mean_ttd_min": events.mean_time_to_detect_min,
+                "median_ttd_min": events.median_time_to_detect_min,
+                "false_alert_minutes": events.false_alert_minutes,
+                "detected_events": events.detected_events,
+                "total_events": events.total_events,
+            }
+        )
+    _save_comparison_table(comparison_rows, f"{args.artifacts_dir}/model_comparison_batch.csv")
 
 
 def _run_incremental(df: pd.DataFrame, args: argparse.Namespace) -> None:
@@ -213,46 +300,69 @@ def _run_incremental(df: pd.DataFrame, args: argparse.Namespace) -> None:
         print("Not enough data for streaming warmup.")
         return
 
-    model = train_isolation_forest(feature_frame.to_numpy(), contamination=args.contamination)
     feature_means = feature_frame.mean()
     feature_stds = feature_frame.std()
-
-    iso_flags = []
-    iso_scores = []
+    latest_feature_rows: list[np.ndarray | None] = []
     for idx in range(len(df)):
-        window_df = df.iloc[: idx + 1]
-        frame = build_feature_frame(window_df)
+        frame = build_feature_frame(df.iloc[: idx + 1])
         if frame.empty:
-            iso_flags.append(0)
-            iso_scores.append(0.0)
-            continue
-        row = frame.iloc[-1].to_numpy().reshape(1, -1)
-        pred, score = predict_isolation_forest(model, row)
-        iso_flags.append(int(pred[0]))
-        iso_scores.append(float(score[0]))
+            latest_feature_rows.append(None)
+        else:
+            latest_feature_rows.append(frame.iloc[-1].to_numpy())
 
-    iso_flag = pd.Series(iso_flags, index=df.index)
-    iso_score = pd.Series(iso_scores, index=df.index)
+    model_results = []
+    for model_name in args.feature_models:
+        model = train_detector(
+            model_name=model_name,
+            X=feature_frame.to_numpy(),
+            contamination=args.contamination,
+        )
+        flags = []
+        scores = []
+        for row in latest_feature_rows:
+            if row is None:
+                flags.append(0)
+                scores.append(0.0)
+                continue
+            pred, score = predict_detector(model_name, model, row.reshape(1, -1))
+            flags.append(int(pred[0]))
+            scores.append(float(score[0]))
+        model_results.append(
+            {
+                "name": model_name,
+                "flag": pd.Series(flags, index=df.index),
+                "score": pd.Series(scores, index=df.index),
+            }
+        )
 
     y_true = df["anomaly_flag"].astype(int)
     baseline_precision, baseline_recall, baseline_f1 = pointwise_metrics(
         y_true.to_numpy(), baseline_flag.to_numpy()
     )
-    iso_precision, iso_recall, iso_f1 = pointwise_metrics(y_true.to_numpy(), iso_flag.to_numpy())
 
     print("Pointwise metrics (streaming simulation)")
     _print_pointwise_summary("Baseline", baseline_precision, baseline_recall, baseline_f1)
-    print("")
-    _print_pointwise_summary("Isolation Forest", iso_precision, iso_recall, iso_f1)
+    for result in model_results:
+        precision, recall, f1 = pointwise_metrics(y_true.to_numpy(), result["flag"].to_numpy())
+        print("")
+        _print_pointwise_summary(_model_label(result["name"]), precision, recall, f1)
 
     baseline_events = event_metrics(y_true.to_numpy(), baseline_flag.to_numpy(), df["timestamp"])
-    iso_events = event_metrics(y_true.to_numpy(), iso_flag.to_numpy(), df["timestamp"])
 
     print("")
     print("Event metrics (streaming simulation)")
     _print_event_summary("Baseline", baseline_events)
-    print("")
-    _print_event_summary("Isolation Forest", iso_events)
+    model_metrics = []
+    for result in model_results:
+        events = event_metrics(y_true.to_numpy(), result["flag"].to_numpy(), df["timestamp"])
+        model_metrics.append(
+            {
+                "name": result["name"],
+                "events": events,
+            }
+        )
+        print("")
+        _print_event_summary(_model_label(result["name"]), events)
 
     baseline_windows = find_windows(baseline_flag.to_numpy())
     baseline_rankings = [
@@ -265,14 +375,15 @@ def _run_incremental(df: pd.DataFrame, args: argparse.Namespace) -> None:
     ]
     _print_root_causes("Baseline", baseline_windows, baseline_rankings)
 
-    iso_windows = find_windows(iso_flag.to_numpy())
     feature_frame_all = build_feature_frame(df)
-    iso_rankings = []
-    for start, end in iso_windows:
-        window_index = df.index[start:end]
-        window_frame = feature_frame_all.loc[feature_frame_all.index.intersection(window_index)]
-        iso_rankings.append(rank_tags_from_feature_window(window_frame, feature_means, feature_stds))
-    _print_root_causes("Isolation Forest", iso_windows, iso_rankings)
+    for result in model_results:
+        windows = find_windows(result["flag"].to_numpy())
+        rankings = []
+        for start, end in windows:
+            window_index = df.index[start:end]
+            window_frame = feature_frame_all.loc[feature_frame_all.index.intersection(window_index)]
+            rankings.append(rank_tags_from_feature_window(window_frame, feature_means, feature_stds))
+        _print_root_causes(_model_label(result["name"]), windows, rankings)
 
     plot_overview(
         df=df,
@@ -284,15 +395,50 @@ def _run_incremental(df: pd.DataFrame, args: argparse.Namespace) -> None:
         output_path=f"{args.artifacts_dir}/baseline_streaming_overview.png",
     )
 
-    plot_overview(
-        df=df,
-        timestamps=df["timestamp"],
-        y_true=y_true,
-        y_pred=iso_flag,
-        score=iso_score,
-        title="Isolation Forest (streaming)",
-        output_path=f"{args.artifacts_dir}/isolation_forest_streaming_overview.png",
-    )
+    for result in model_results:
+        model_name = result["name"]
+        plot_overview(
+            df=df,
+            timestamps=df["timestamp"],
+            y_true=y_true,
+            y_pred=result["flag"],
+            score=result["score"],
+            title=f"{_model_label(model_name)} (streaming)",
+            output_path=f"{args.artifacts_dir}/{model_name}_streaming_overview.png",
+        )
+
+    comparison_rows = [
+        {
+            "model": "baseline_rolling_zscore_streaming",
+            "precision": baseline_precision,
+            "recall": baseline_recall,
+            "f1": baseline_f1,
+            "event_recall": baseline_events.event_recall,
+            "mean_ttd_min": baseline_events.mean_time_to_detect_min,
+            "median_ttd_min": baseline_events.median_time_to_detect_min,
+            "false_alert_minutes": baseline_events.false_alert_minutes,
+            "detected_events": baseline_events.detected_events,
+            "total_events": baseline_events.total_events,
+        }
+    ]
+    for result, metrics in zip(model_results, model_metrics):
+        precision, recall, f1 = pointwise_metrics(y_true.to_numpy(), result["flag"].to_numpy())
+        events = metrics["events"]
+        comparison_rows.append(
+            {
+                "model": str(result["name"]),
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "event_recall": events.event_recall,
+                "mean_ttd_min": events.mean_time_to_detect_min,
+                "median_ttd_min": events.median_time_to_detect_min,
+                "false_alert_minutes": events.false_alert_minutes,
+                "detected_events": events.detected_events,
+                "total_events": events.total_events,
+            }
+        )
+    _save_comparison_table(comparison_rows, f"{args.artifacts_dir}/model_comparison_streaming.csv")
 
 
 def main() -> None:
